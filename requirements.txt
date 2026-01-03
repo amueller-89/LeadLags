@@ -1,0 +1,16 @@
+# Core Data Science
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+statsmodels>=0.14.0
+pyarrow>=12.0.0
+
+# Data Fetching
+ccxt>=4.0.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Linting
+ruff>=0.1.0
