@@ -1,0 +1,827 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{enumitem}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2,
+    language=Python
+}
+\lstset{style=mystyle}
+
+\title{\textbf{Lead-Lag Detection in Crypto Markets}\\[0.5em]\large From Spectral Methods to Temporal Graph Neural Networks}
+\author{Project Specification}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This project compares four approaches to discovering lead-lag relationships in cryptocurrency markets using tick-level trade data: (1) spectral analysis via the Hilbert transform, (2) Graph Attention Networks (GAT), (3) Temporal Graph Attention Networks (TGAT), and optionally (4) Sheaf Neural Networks. Unlike traditional equity markets, crypto trades 24/7 with publicly available tick data, making it ideal for studying high-frequency information propagation. We investigate whether BTC leads altcoins, how quickly price discovery propagates across assets, and whether learned attention patterns recover spectral phase relationships.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Motivation}
+%==============================================================================
+
+\subsection{Why Crypto?}
+
+\begin{enumerate}
+    \item \textbf{Free tick data}: Binance provides historical trade-level data going back years, no payment required
+    \item \textbf{24/7 trading}: No overnight gaps, no market open/close effects
+    \item \textbf{Natural event structure}: Each trade is a discrete event, fitting TGAT's design perfectly
+    \item \textbf{Genuine lead-lag}: BTC is widely believed to lead altcoins; we can test this quantitatively
+    \item \textbf{Fast dynamics}: Lead-lag effects occur over seconds to minutes, not days
+\end{enumerate}
+
+\subsection{The Core Question}
+
+When BTC moves, how quickly do ETH, SOL, and other assets follow? Is this propagation structure:
+\begin{itemize}
+    \item Recoverable from frequency-domain analysis (spectral)?
+    \item Learnable by a contemporaneous attention model (GAT)?
+    \item Better captured by temporal attention (TGAT)?
+    \item Expressible as phase shifts in a sheaf structure?
+\end{itemize}
+
+\subsection{What We'll Compare}
+
+\begin{center}
+\begin{tabular}{lllll}
+\toprule
+\textbf{Method} & \textbf{Temporal?} & \textbf{Learned?} & \textbf{Output} & \textbf{Fit to Tick Data} \\
+\midrule
+Spectral (Hilbert) & Yes (frequency domain) & No & Phases $\phi_{ij}$ & Good (after resampling) \\
+GAT & No (contemporaneous) & Yes & Attention $\alpha_{ij}$ & Poor (snapshot-based) \\
+GAT + lags & Implicit & Yes & Attention $\alpha_{ij}$ & Okay (hack) \\
+TGAT & Yes (explicit) & Yes & Temporal attention & Native fit \\
+Sheaf NN & Yes (by design) & Yes & Learned phases & Good (after resampling) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%==============================================================================
+\section{Data}
+%==============================================================================
+
+\subsection{Asset Universe}
+
+Ten liquid trading pairs on Binance (all against USDT):
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Ticker} & \textbf{Name} & \textbf{Category} & \textbf{Expected Role} \\
+\midrule
+BTC & Bitcoin & Store of value & Leader \\
+ETH & Ethereum & Smart contracts & Fast follower \\
+BNB & Binance Coin & Exchange token & Exchange-specific \\
+SOL & Solana & Alt L1 & Follower \\
+XRP & Ripple & Payments & Idiosyncratic \\
+ADA & Cardano & Alt L1 & Follower \\
+DOGE & Dogecoin & Meme & Retail-driven \\
+MATIC & Polygon & L2 & ETH-correlated \\
+LINK & Chainlink & Oracle & DeFi-correlated \\
+AVAX & Avalanche & Alt L1 & Follower \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Data Source}
+
+Binance historical trade data: \url{https://data.binance.vision/}
+
+\begin{lstlisting}[language=bash]
+# Download March 2024 trades for BTCUSDT
+wget https://data.binance.vision/data/spot/daily/trades/BTCUSDT/BTCUSDT-trades-2024-03-01.zip
+\end{lstlisting}
+
+Each file contains:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Field} & \textbf{Description} \\
+\midrule
+\texttt{trade\_id} & Unique trade identifier \\
+\texttt{price} & Execution price \\
+\texttt{qty} & Quantity traded \\
+\texttt{quote\_qty} & Quote asset quantity \\
+\texttt{time} & Unix timestamp (milliseconds) \\
+\texttt{is\_buyer\_maker} & Trade direction \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Data Volume}
+
+Typical volumes:
+\begin{itemize}
+    \item BTC/USDT: $\sim$1--2 million trades/day
+    \item ETH/USDT: $\sim$500k--1M trades/day
+    \item Smaller altcoins: $\sim$100k--500k trades/day
+\end{itemize}
+
+For one week of data across 10 assets: $\sim$50--100 million trades. We'll subsample.
+
+\subsection{Preprocessing}
+
+\begin{enumerate}
+    \item \textbf{Download}: Fetch daily ZIP files for each asset
+    \item \textbf{Parse}: Load into DataFrames, convert timestamps
+    \item \textbf{Aggregate}: Create uniform time bars (e.g., 1-second or 5-second bars)
+    \item \textbf{Align}: Ensure all assets have same timestamp index
+    \item \textbf{Compute returns}: Log returns for each bar
+\end{enumerate}
+
+\begin{lstlisting}[language=Python]
+import pandas as pd
+import numpy as np
+
+def load_trades(filepath):
+    """Load Binance trade data from ZIP."""
+    df = pd.read_csv(
+        filepath,
+        compression='zip',
+        names=['trade_id', 'price', 'qty', 'quote_qty', 
+               'time', 'is_buyer_maker', 'is_best_match']
+    )
+    df['time'] = pd.to_datetime(df['time'], unit='ms')
+    df = df.set_index('time')
+    return df
+
+def aggregate_to_bars(trades, freq='5S'):
+    """Aggregate trades to OHLCV bars."""
+    bars = trades['price'].resample(freq).ohlc()
+    bars['volume'] = trades['qty'].resample(freq).sum()
+    bars['num_trades'] = trades['price'].resample(freq).count()
+    bars = bars.dropna()
+    return bars
+
+def compute_returns(bars):
+    """Compute log returns from close prices."""
+    return np.log(bars['close'] / bars['close'].shift(1)).dropna()
+\end{lstlisting}
+
+\subsection{Time Period}
+
+\begin{itemize}
+    \item \textbf{Development}: 1 week of data (March 1--7, 2024)
+    \item \textbf{Full analysis}: 1 month if compute permits
+    \item \textbf{Train/Val/Test}: 60\%/20\%/20\% chronological split
+\end{itemize}
+
+%==============================================================================
+\section{Method 1: Spectral Lead-Lag}
+%==============================================================================
+
+\subsection{Overview}
+
+Same approach as before, but on higher-frequency data:
+\begin{enumerate}
+    \item Aggregate trades to fixed bars (5-second)
+    \item Compute log returns
+    \item Apply Hilbert transform to get analytic signals
+    \item Compute complex correlation matrix
+    \item Extract global phases via Angular Synchronization
+\end{enumerate}
+
+\subsection{Resolution Choice}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Bar Size} & \textbf{Bars/Day} & \textbf{Lead-Lag Horizon} \\
+\midrule
+1 second & 86,400 & Sub-second to seconds \\
+5 seconds & 17,280 & Seconds to minutes \\
+30 seconds & 2,880 & Minutes \\
+1 minute & 1,440 & Minutes to hours \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Recommendation: Start with \textbf{5-second bars}. Fine enough to capture fast dynamics, coarse enough to reduce noise.
+
+\subsection{Implementation}
+
+\begin{lstlisting}[language=Python]
+from scipy import signal
+
+def compute_spectral_phases(returns_df):
+    """
+    Compute lead-lag phases via Hilbert transform.
+    
+    returns_df: (T, N) DataFrame of log returns, columns are assets
+    Returns: (N,) array of global phases
+    """
+    # Analytic signals
+    analytic = pd.DataFrame(
+        signal.hilbert(returns_df.values, axis=0),
+        index=returns_df.index,
+        columns=returns_df.columns
+    )
+    
+    # Standardize
+    Z = (analytic - analytic.mean()) / analytic.std()
+    
+    # Complex correlation matrix
+    C = Z.values.conj().T @ Z.values / len(Z)
+    
+    # Principal eigenvector
+    eigenvalues, eigenvectors = np.linalg.eigh(C)
+    v1 = eigenvectors[:, -1]
+    
+    # Extract and center phases
+    theta = np.angle(v1)
+    theta -= np.angle(np.mean(np.exp(1j * theta)))
+    
+    return theta, C
+\end{lstlisting}
+
+\subsection{Expected Output}
+
+A ranking like:
+\begin{center}
+\begin{tabular}{cl}
+\toprule
+\textbf{Rank} & \textbf{Asset} \\
+\midrule
+1 (leads) & BTC \\
+2 & ETH \\
+3 & BNB \\
+4 & SOL \\
+$\vdots$ & $\vdots$ \\
+10 (lags) & DOGE \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+If BTC doesn't come out on top, that's interesting---maybe ETH leads in DeFi-correlated moves?
+
+%==============================================================================
+\section{Method 2: GAT (Baseline)}
+%==============================================================================
+
+\subsection{Why Include It?}
+
+GAT isn't designed for temporal data, but it's a useful baseline:
+\begin{itemize}
+    \item If GAT works well, maybe temporal structure isn't crucial
+    \item If GAT fails, we have evidence that proper temporal modeling matters
+    \item It's simple to implement and understand
+\end{itemize}
+
+\subsection{Setup}
+
+\textbf{Graph}: Fully connected (10 nodes, 90 directed edges)
+
+\textbf{Node features} at each time $t$ (per bar):
+\begin{itemize}
+    \item \texttt{ret\_1}: Return this bar
+    \item \texttt{ret\_5}: Cumulative return over last 5 bars
+    \item \texttt{ret\_20}: Cumulative return over last 20 bars
+    \item \texttt{vol\_20}: Rolling volatility (20 bars)
+    \item \texttt{volume\_zscore}: Volume relative to recent average
+    \item \texttt{num\_trades}: Number of trades this bar
+\end{itemize}
+
+\textbf{With lagged features} (Option B from before):
+\begin{itemize}
+    \item \texttt{ret\_lag1}: Return of previous bar
+    \item \texttt{ret\_lag2}: Return two bars ago
+    \item \texttt{neighbor\_ret\_lag1\_mean}: Average neighbor return last bar
+\end{itemize}
+
+\textbf{Target}: Next-bar return sign (binary classification)
+
+\subsection{Architecture}
+
+\begin{lstlisting}[language=Python]
+import torch
+import torch.nn.functional as F
+from torch_geometric.nn import GATConv
+
+class CryptoGAT(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels=32, heads=4):
+        super().__init__()
+        self.conv1 = GATConv(in_channels, hidden_channels, heads=heads, concat=True)
+        self.conv2 = GATConv(hidden_channels * heads, hidden_channels, heads=1, concat=False)
+        self.lin = torch.nn.Linear(hidden_channels, 1)
+    
+    def forward(self, x, edge_index, return_attention=False):
+        x, (edge_index_1, alpha_1) = self.conv1(
+            x, edge_index, return_attention_weights=True
+        )
+        x = F.elu(x)
+        x = F.dropout(x, p=0.3, training=self.training)
+        
+        x, (edge_index_2, alpha_2) = self.conv2(
+            x, edge_index, return_attention_weights=True
+        )
+        x = F.elu(x)
+        
+        out = self.lin(x)
+        
+        if return_attention:
+            return out, alpha_1
+        return out
+\end{lstlisting}
+
+\subsection{Attention Extraction}
+
+After training, extract "who attends to whom":
+\begin{lstlisting}[language=Python]
+def get_attention_ranking(model, data):
+    """Compute attention inflow for each node."""
+    model.eval()
+    with torch.no_grad():
+        _, alpha = model(data.x, data.edge_index, return_attention=True)
+    
+    # alpha: (num_edges, num_heads) -> average over heads
+    alpha_mean = alpha.mean(dim=1)
+    
+    # Sum attention flowing INTO each node
+    num_nodes = data.x.shape[0]
+    inflow = torch.zeros(num_nodes)
+    for i, (src, tgt) in enumerate(data.edge_index.T):
+        inflow[tgt] += alpha_mean[i]
+    
+    return inflow.numpy()
+\end{lstlisting}
+
+%==============================================================================
+\section{Method 3: TGAT}
+%==============================================================================
+
+\subsection{Why TGAT Fits}
+
+TGAT was designed for exactly this: irregular events with timestamps. Each trade is an event, and TGAT can attend over historical events for each node.
+
+\subsection{Data Format}
+
+TGAT expects a stream of events, not snapshots:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Source} & \textbf{Target} & \textbf{Time} & \textbf{Features} \\
+\midrule
+BTC & BTC & 1709312400.123 & [price, volume, ...] \\
+ETH & ETH & 1709312400.456 & [price, volume, ...] \\
+BTC & BTC & 1709312401.001 & [price, volume, ...] \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Self-edges represent "node $i$ updated at time $t$." Cross-edges can represent "price correlation links."
+
+\subsection{Two Formulations}
+
+\textbf{Option A: Trade events only}
+\begin{itemize}
+    \item Each trade is an event on that asset's node
+    \item Cross-asset edges connect correlated assets
+    \item TGAT attends over each asset's recent trade history
+\end{itemize}
+
+\textbf{Option B: Regular sampling with event structure}
+\begin{itemize}
+    \item Sample at fixed intervals (5 seconds)
+    \item Treat each sample as an "event" for all nodes
+    \item Simpler, but loses some temporal granularity
+\end{itemize}
+
+Recommendation: Start with Option B (simpler), then try Option A if time permits.
+
+\subsection{Architecture}
+
+\begin{lstlisting}[language=Python]
+# Using PyTorch Geometric Temporal
+from torch_geometric_temporal.nn.attention import TGAT
+
+class CryptoTGAT(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels=32, num_heads=4):
+        super().__init__()
+        self.tgat = TGAT(
+            in_channels=in_channels,
+            out_channels=hidden_channels,
+            heads=num_heads,
+        )
+        self.lin = torch.nn.Linear(hidden_channels * num_heads, 1)
+    
+    def forward(self, x, edge_index, edge_time):
+        """
+        x: (num_nodes, in_channels) - node features
+        edge_index: (2, num_edges) - graph structure
+        edge_time: (num_edges,) - timestamp of each edge
+        """
+        h = self.tgat(x, edge_index, edge_time)
+        return self.lin(h)
+\end{lstlisting}
+
+\subsection{Temporal Attention Interpretation}
+
+TGAT produces attention weights $\alpha_{ij}^{(t, \tau)}$: "how much does node $i$ at time $t$ attend to node $j$ at time $\tau < t$?"
+
+For lead-lag:
+\begin{itemize}
+    \item High $\alpha_{\text{ETH} \leftarrow \text{BTC}}^{(t, t-1)}$: BTC's recent past matters for ETH now
+    \item Compare $\alpha_{i \leftarrow j}$ vs $\alpha_{j \leftarrow i}$ to determine who leads
+\end{itemize}
+
+%==============================================================================
+\section{Method 4: Sheaf Neural Networks (Optional)}
+%==============================================================================
+
+\subsection{The Idea}
+
+Model lead-lag as phase shifts in a $U(1)$ sheaf:
+\begin{itemize}
+    \item Each node has a complex-valued state
+    \item Restriction maps are phase rotations $e^{i\phi_{ij}}$
+    \item Learn the phases end-to-end
+\end{itemize}
+
+\subsection{Why It's Hard}
+
+\begin{enumerate}
+    \item Complex tensor support in PyTorch is incomplete
+    \item Phases live on a circle, not $\mathbb{R}$---gradient descent doesn't respect this
+    \item Antisymmetry constraint ($\phi_{ij} = -\phi_{ji}$) must be enforced
+    \item Initialization matters: random phases $\to$ no learning
+    \item Degenerate solutions (all phases $\to$ 0) require careful regularization
+\end{enumerate}
+
+\subsection{Implementation Sketch}
+
+\begin{lstlisting}[language=Python]
+class SheafConv(torch.nn.Module):
+    def __init__(self, num_nodes, in_channels, out_channels):
+        super().__init__()
+        # Learnable phases (upper triangle only, for antisymmetry)
+        n_pairs = num_nodes * (num_nodes - 1) // 2
+        self.phase_params = torch.nn.Parameter(torch.zeros(n_pairs))
+        self.lin = torch.nn.Linear(in_channels, out_channels)
+    
+    def get_phase_matrix(self, num_nodes):
+        """Build antisymmetric phase matrix."""
+        idx = torch.triu_indices(num_nodes, num_nodes, offset=1)
+        phases = torch.zeros(num_nodes, num_nodes)
+        phases[idx[0], idx[1]] = self.phase_params
+        phases[idx[1], idx[0]] = -self.phase_params
+        return phases
+    
+    def forward(self, x, adj):
+        num_nodes = x.shape[0]
+        x = self.lin(x)
+        
+        # Magnetic adjacency
+        phases = self.get_phase_matrix(num_nodes)
+        magnetic_adj = adj * torch.exp(1j * phases)
+        
+        # Normalized diffusion
+        deg = adj.sum(dim=1)
+        deg_inv_sqrt = torch.diag(1.0 / torch.sqrt(deg + 1e-8))
+        norm_adj = deg_inv_sqrt @ magnetic_adj @ deg_inv_sqrt
+        
+        # Aggregate (complex-valued)
+        x_complex = x.to(torch.cfloat)
+        out = norm_adj @ x_complex
+        
+        return out.real
+\end{lstlisting}
+
+\subsection{When to Attempt}
+
+Only after completing spectral, GAT, and TGAT. Budget 1--2 weeks for debugging.
+
+%==============================================================================
+\section{Comparison Analysis}
+%==============================================================================
+
+\subsection{Metric 1: Rank Correlation}
+
+Compare lead-lag rankings across methods:
+
+\begin{lstlisting}[language=Python]
+from scipy.stats import spearmanr
+
+# Rankings from each method
+spectral_rank = np.argsort(-spectral_phases)  # Higher phase = leads
+gat_rank = np.argsort(-gat_attention_inflow)
+tgat_rank = np.argsort(-tgat_attention_inflow)
+
+# Pairwise Spearman correlations
+rho_spectral_gat, _ = spearmanr(spectral_rank, gat_rank)
+rho_spectral_tgat, _ = spearmanr(spectral_rank, tgat_rank)
+rho_gat_tgat, _ = spearmanr(gat_rank, tgat_rank)
+\end{lstlisting}
+
+\subsection{Metric 2: Prediction Performance}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Model} & \textbf{Task} & \textbf{Metrics} \\
+\midrule
+Baseline (logistic) & Predict next-bar sign & Accuracy, AUC \\
+GAT & Predict next-bar sign & Accuracy, AUC \\
+GAT + lags & Predict next-bar sign & Accuracy, AUC \\
+TGAT & Predict next-bar sign & Accuracy, AUC \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Metric 3: Qualitative Analysis}
+
+\begin{enumerate}
+    \item \textbf{Market Clock}: Polar plot of spectral phases
+    \item \textbf{Attention heatmaps}: GAT and TGAT attention matrices
+    \item \textbf{Lead-lag consistency}: Does BTC consistently lead across methods?
+    \item \textbf{Regime dependence}: Do rankings change during high volatility?
+\end{enumerate}
+
+\subsection{Hypotheses}
+
+Before running experiments:
+
+\begin{enumerate}
+    \item BTC leads all other assets (spectral phase highest)
+    \item ETH is second (fast follower)
+    \item DOGE is most lagging (retail-driven, slow to react)
+    \item TGAT outperforms GAT on prediction (temporal structure matters)
+    \item Spectral and TGAT rankings correlate ($\rho > 0.6$)
+    \item GAT rankings correlate less with spectral ($\rho \approx 0.3$--$0.5$)
+\end{enumerate}
+
+%==============================================================================
+\section{Implementation Plan}
+%==============================================================================
+
+\subsection{Week 1: Data Pipeline + Spectral}
+
+\begin{center}
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{Day} & \textbf{Task} \\
+\midrule
+1 & Write download script for Binance historical data \\
+2 & Load and parse trade data for 10 assets, one day \\
+3 & Aggregate to 5-second bars, align timestamps \\
+4 & Implement Hilbert transform pipeline, compute phases \\
+5 & Create Market Clock visualization, validate BTC leads \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Deliverables}:
+\begin{itemize}
+    \item \texttt{data/trades/*.parquet} --- raw trade data
+    \item \texttt{data/bars\_5s.parquet} --- aggregated bars
+    \item \texttt{results/spectral\_phases.csv}
+    \item \texttt{figures/market\_clock.png}
+\end{itemize}
+
+\subsection{Week 2: GAT}
+
+\begin{center}
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{Day} & \textbf{Task} \\
+\midrule
+1 & Create PyG Data objects from bar data \\
+2 & Implement GAT model, verify forward pass \\
+3 & Add lagged features (Option B) \\
+4 & Train GAT, extract attention weights \\
+5 & Compare attention ranking to spectral ranking \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Deliverables}:
+\begin{itemize}
+    \item \texttt{models/gat.pt}
+    \item \texttt{results/gat\_attention.csv}
+    \item \texttt{figures/attention\_heatmap.png}
+\end{itemize}
+
+\subsection{Week 3: TGAT}
+
+\begin{center}
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{Day} & \textbf{Task} \\
+\midrule
+1 & Install \texttt{torch\_geometric\_temporal}, understand API \\
+2 & Reformat data for TGAT (event stream or batched snapshots) \\
+3 & Implement TGAT model \\
+4 & Train TGAT, extract temporal attention \\
+5 & Compare TGAT ranking to spectral and GAT \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Deliverables}:
+\begin{itemize}
+    \item \texttt{models/tgat.pt}
+    \item \texttt{results/tgat\_attention.csv}
+    \item \texttt{figures/temporal\_attention.png}
+\end{itemize}
+
+\subsection{Week 4: Comparison + Write-up}
+
+\begin{center}
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{Day} & \textbf{Task} \\
+\midrule
+1 & Compute all comparison metrics (rank correlations, prediction accuracy) \\
+2 & Create comparison visualizations \\
+3 & Analyze disagreements between methods \\
+4 & Write final report \\
+5 & Clean code, documentation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Deliverables}:
+\begin{itemize}
+    \item \texttt{results/comparison\_metrics.json}
+    \item \texttt{figures/ranking\_comparison.png}
+    \item \texttt{report/final\_report.pdf}
+\end{itemize}
+
+\subsection{Week 5+ (Optional): Sheaf NN}
+
+\begin{center}
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{Day} & \textbf{Task} \\
+\midrule
+1--2 & Implement SheafConv with learnable phases \\
+3 & Handle complex gradients, phase projection \\
+4 & Initialize from spectral phases, train \\
+5 & Compare learned phases to spectral ground truth \\
+6--7 & Debug, regularize, iterate \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%==============================================================================
+\section{Technical Stack}
+%==============================================================================
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Component} & \textbf{Library} \\
+\midrule
+Data download & \texttt{requests}, \texttt{wget} \\
+Data processing & \texttt{pandas}, \texttt{numpy}, \texttt{pyarrow} \\
+Signal processing & \texttt{scipy.signal} \\
+Graph neural networks & \texttt{torch\_geometric} \\
+Temporal GNNs & \texttt{torch\_geometric\_temporal} \\
+Visualization & \texttt{matplotlib}, \texttt{seaborn}, \texttt{networkx} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Installation}
+
+\begin{lstlisting}[language=bash]
+pip install pandas numpy scipy matplotlib seaborn networkx pyarrow
+pip install torch torch_geometric
+pip install torch_geometric_temporal
+\end{lstlisting}
+
+%==============================================================================
+\section{Expected Results}
+%==============================================================================
+
+\subsection{Spectral Ranking (Hypothesized)}
+
+\begin{center}
+\begin{tabular}{cll}
+\toprule
+\textbf{Rank} & \textbf{Asset} & \textbf{Rationale} \\
+\midrule
+1 & BTC & Market leader, most liquidity \\
+2 & ETH & Second largest, DeFi hub \\
+3 & BNB & Exchange token, Binance-specific info \\
+4 & SOL & High-beta alt L1 \\
+5 & LINK & DeFi infrastructure \\
+6 & AVAX & Alt L1 \\
+7 & MATIC & ETH L2, follows ETH \\
+8 & ADA & Slower community \\
+9 & XRP & Idiosyncratic (legal issues) \\
+10 & DOGE & Retail meme coin, slowest \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Method Agreement (Hypothesized)}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+& \textbf{Spectral} & \textbf{GAT} & \textbf{TGAT} \\
+\midrule
+Spectral & 1.0 & 0.4 & 0.7 \\
+GAT & & 1.0 & 0.5 \\
+TGAT & & & 1.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+TGAT should agree more with spectral (both capture temporal structure) while GAT captures something different (contemporaneous importance).
+
+\subsection{Prediction Performance (Hypothesized)}
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{Accuracy} & \textbf{AUC} \\
+\midrule
+Baseline & 0.50 & 0.50 \\
+GAT & 0.51 & 0.52 \\
+GAT + lags & 0.52 & 0.54 \\
+TGAT & 0.53 & 0.56 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Modest improvements---crypto is noisy and efficient. But TGAT should show consistent edge.
+
+%==============================================================================
+\section{Success Criteria}
+%==============================================================================
+
+The project is successful if:
+
+\begin{enumerate}
+    \item \textbf{Data pipeline works}: Can download, parse, and aggregate Binance tick data
+    \item \textbf{Spectral method produces sensible ranking}: BTC leads or there's a good explanation why not
+    \item \textbf{GAT and TGAT train without diverging}: Produce non-trivial attention patterns
+    \item \textbf{Comparison is quantified}: Rank correlations computed and interpreted
+    \item \textbf{You understand all four methods}: Can explain Hilbert transform, GAT attention, TGAT temporal attention, and sheaf phases
+\end{enumerate}
+
+The project is \emph{not} judged by:
+\begin{itemize}
+    \item High prediction accuracy (crypto is efficient)
+    \item Perfect method agreement (disagreement is interesting)
+    \item Completing Sheaf NN (it's optional)
+\end{itemize}
+
+%==============================================================================
+\section{References}
+%==============================================================================
+
+\begin{thebibliography}{99}
+
+\bibitem{tgat} Xu, D., et al. ``Inductive Representation Learning on Temporal Graphs.'' ICLR, 2020.
+
+\bibitem{gat} Veli\v{c}kovi\'{c}, P., et al. ``Graph Attention Networks.'' ICLR, 2018.
+
+\bibitem{sheaf} Bodnar, C., et al. ``Neural Sheaf Diffusion.'' NeurIPS, 2022.
+
+\bibitem{hilbert} Marple, S.L. ``Computing the Discrete-Time Analytic Signal via FFT.'' IEEE Trans.\ Signal Processing, 1999.
+
+\bibitem{crypto_leadlag} Aslanidis, N., et al. ``Lead-Lag Relationships in Cryptocurrency Markets.'' Finance Research Letters, 2022.
+
+\end{thebibliography}
+
+\end{document}
