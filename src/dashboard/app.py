@@ -10,7 +10,7 @@ import streamlit as st
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dashboard import analysis_runner, data_manager, results_viewer, state
+from dashboard import analysis_runner, data_manager, results_viewer, state, tgat_runner
 
 
 def main():
@@ -50,6 +50,13 @@ def main():
         else:
             st.info("ℹ️ No analysis run yet")
 
+        # TGAT status
+        if st.session_state.get("tgat_results") is not None:
+            mse = st.session_state.tgat_results.get("test_mse", float("nan"))
+            st.success(f"✅ TGAT trained (MSE={mse:.5f})")
+        else:
+            st.info("ℹ️ TGAT not trained")
+
         st.markdown("---")
 
         # Quick info
@@ -68,15 +75,23 @@ def main():
         st.markdown("---")
         st.caption("Powered by Streamlit & Anthropic Claude")
 
+    # Global training banner
+    if st.session_state.get("tgat_training_active"):
+        st.warning(
+            "🏋️ **TGAT training is running.** "
+            "Navigate to the TGAT tab to monitor progress or interrupt training."
+        )
+
     # Main content area
     st.title("Crypto Lead-Lag Analysis Dashboard")
     st.markdown("Analyze frequency-specific lead-lag relationships in cryptocurrency markets using spectral methods.")
 
     # Create tabs
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Data Management",
         "⚙️ Analysis",
-        "📈 Results"
+        "📈 Results",
+        "🤖 TGAT"
     ])
 
     with tab1:
@@ -87,6 +102,9 @@ def main():
 
     with tab3:
         results_viewer.render()
+
+    with tab4:
+        tgat_runner.render()
 
 
 if __name__ == "__main__":

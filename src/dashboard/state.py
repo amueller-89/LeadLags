@@ -50,6 +50,16 @@ def initialize_session_state():
     if 'selected_run_dir' not in st.session_state:
         st.session_state.selected_run_dir = None
 
+    # TGAT Results
+    if 'tgat_results' not in st.session_state:
+        st.session_state.tgat_results = None
+
+    if 'tgat_trainer' not in st.session_state:
+        st.session_state.tgat_trainer = None
+
+    if 'tgat_inference_ctx' not in st.session_state:
+        st.session_state.tgat_inference_ctx = None
+
 
 def reset_loaded_data():
     """Reset loaded data and related state."""

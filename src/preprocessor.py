@@ -52,10 +52,20 @@ class CryptoPreprocessor:
         """
         freq_str = freq_str.lower().strip()
 
-        if freq_str.endswith('s'):
+        # Sub-second units — must be checked before the plain 's' branch,
+        # otherwise '208ms'.endswith('s') matches and strips to '208m'.
+        if freq_str.endswith('ms'):
+            num_str = freq_str[:-2]
+            return (float(num_str) if num_str else 1.0) / 1000
+        elif freq_str.endswith('us') or freq_str.endswith('μs'):
+            num_str = freq_str[:-2]
+            return (float(num_str) if num_str else 1.0) / 1_000_000
+        elif freq_str.endswith('ns'):
+            num_str = freq_str[:-2]
+            return (float(num_str) if num_str else 1.0) / 1_000_000_000
+        elif freq_str.endswith('s'):
             num_str = freq_str[:-1]
-            # Handle pandas inferred 's' (which means '1s')
-            if num_str == '' or num_str == 'T':
+            if num_str == '' or num_str == 't':
                 return 1.0
             return float(num_str)
         elif freq_str.endswith('min') or freq_str.endswith('t'):
@@ -231,7 +241,9 @@ class CryptoPreprocessor:
                     median_seconds = time_diffs.median().total_seconds()
 
                     # Convert to frequency string
-                    if median_seconds < 60:
+                    if median_seconds < 1:
+                        source_native_freq = f"{int(median_seconds * 1000)}ms"
+                    elif median_seconds < 60:
                         source_native_freq = f"{int(median_seconds)}s"
                     elif median_seconds < 3600:
                         source_native_freq = f"{int(median_seconds/60)}min"
@@ -275,14 +287,31 @@ class CryptoPreprocessor:
 
         resampled_data = {}
         for symbol, df in data_dict.items():
-            # Standard OHLCV resampling rules
-            resampled = df.resample(freq).agg({
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            })
+            if 'close' in df.columns:
+                # OHLCV format — standard aggregation
+                resampled = df.resample(freq).agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                })
+            elif 'price' in df.columns:
+                # Raw tick format (price, amount, ...) — build OHLCV from trades
+                amount_col = 'amount' if 'amount' in df.columns else df.columns[1]
+                resampled = df.resample(freq).agg(
+                    open=('price', 'first'),
+                    high=('price', 'max'),
+                    low=('price', 'min'),
+                    close=('price', 'last'),
+                    volume=(amount_col, 'sum'),
+                )
+            else:
+                raise ValueError(
+                    f"Symbol '{symbol}' has unrecognised columns {list(df.columns)}. "
+                    f"Expected OHLCV columns ('open','high','low','close','volume') "
+                    f"or raw tick columns ('price','amount',...)."
+                )
 
             # Forward fill any NaN values (from periods with no trades)
             resampled = resampled.ffill()
@@ -442,15 +471,30 @@ class CryptoPreprocessor:
         print("\nData Quality Report:")
         print(quality_report.to_string(index=False))
 
-        # Step 2: Align timestamps
-        if align:
-            print("\n" + "=" * 60)
-            data_dict = self.align_timestamps(data_dict)
+        # Detect raw tick data (price/amount columns instead of OHLCV close column)
+        has_tick_format = any('price' in df.columns for df in data_dict.values())
 
-        # Step 3: Resample
-        if resample:
+        if has_tick_format and resample:
+            # For tick data, resample each asset to OHLCV independently first, then align.
+            # Doing alignment first would build a common_index at raw tick frequency
+            # (potentially millions of rows), causing the aligned DataFrames to be full of
+            # NaNs that survive into returns and make the result empty.
             print("\n" + "=" * 60)
+            print("Tick data detected — resampling before alignment")
             data_dict = self.resample_ohlcv(data_dict)
+            if align:
+                print("\n" + "=" * 60)
+                data_dict = self.align_timestamps(data_dict)
+        else:
+            # Step 2: Align timestamps
+            if align:
+                print("\n" + "=" * 60)
+                data_dict = self.align_timestamps(data_dict)
+
+            # Step 3: Resample
+            if resample:
+                print("\n" + "=" * 60)
+                data_dict = self.resample_ohlcv(data_dict)
 
         # Step 4: Calculate returns
         returns_df = None

@@ -73,14 +73,16 @@ def list_cached_data() -> List[Dict]:
                 start_display = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
                 end_display = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
 
-                # Get file size
-                file_size_bytes = parquet_file.stat().st_size
+                stat = parquet_file.stat()
+                file_size_bytes = stat.st_size
                 if file_size_bytes < 1024:
                     file_size = f"{file_size_bytes} B"
                 elif file_size_bytes < 1024 * 1024:
                     file_size = f"{file_size_bytes / 1024:.1f} KB"
                 else:
                     file_size = f"{file_size_bytes / (1024 * 1024):.1f} MB"
+
+                date_fetched = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
 
                 cached_files.append({
                     'filename': parquet_file.name,
@@ -89,6 +91,7 @@ def list_cached_data() -> List[Dict]:
                     'start_date': start_display,
                     'end_date': end_display,
                     'file_size': file_size,
+                    'date_fetched': date_fetched,
                     'filepath': str(parquet_file)
                 })
         except Exception as e:
@@ -285,6 +288,120 @@ def list_analysis_runs(output_base_dir: Path = None) -> List[Dict]:
     # Sort by timestamp (most recent first)
     runs.sort(key=lambda x: x['timestamp'], reverse=True)
 
+    return runs
+
+
+def save_tgat_run(
+    model,
+    config: Dict,
+    results: Dict,
+    output_base_dir: Path = None,
+) -> Path:
+    """
+    Save a trained TGAT run to disk.
+
+    Args:
+        model: TGATModel instance (trained)
+        config: keys: asset_names, n_assets, window_seconds, band_name, spectral_seeding,
+                lr, max_epochs, patience, tick_files, spectral_run, n_heads, n_layers, node_embed_dim
+        results: keys: test_mse, test_spearman, spearman_vs_spectral, loss_history,
+                 attn_matrix (N,N ndarray or None), edge_feats (N,N,2 ndarray or None)
+
+    Returns:
+        Path to the saved run directory.
+    """
+    import torch
+    import numpy as np
+
+    if output_base_dir is None:
+        output_base_dir = Path(__file__).parent.parent / "results" / "tgat_runs"
+
+    output_base_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_base_dir / f"run_{timestamp}"
+    run_dir.mkdir(exist_ok=True)
+
+    # config.json
+    serializable = {}
+    for k, v in config.items():
+        serializable[k] = v if isinstance(v, (int, float, str, bool, list, dict, type(None))) else str(v)
+    serializable["timestamp"] = timestamp
+    with open(run_dir / "config.json", "w") as f:
+        json.dump(serializable, f, indent=2)
+
+    # results.json — scalar / list values only
+    results_scalar = {
+        k: v for k, v in results.items()
+        if k not in ("attn_matrix", "edge_feats")
+        and isinstance(v, (int, float, str, bool, list, dict, type(None)))
+    }
+    with open(run_dir / "results.json", "w") as f:
+        json.dump(results_scalar, f, indent=2)
+
+    # numpy arrays
+    if results.get("attn_matrix") is not None:
+        np.save(run_dir / "attention.npy", np.array(results["attn_matrix"], dtype=np.float32))
+    if results.get("edge_feats") is not None:
+        np.save(run_dir / "edge_feats.npy", np.array(results["edge_feats"], dtype=np.float32))
+
+    # model weights
+    torch.save(model.state_dict(), run_dir / "model.pt")
+
+    return run_dir
+
+
+def list_tgat_runs(output_base_dir: Path = None) -> List[Dict]:
+    """
+    List all saved TGAT runs, most recent first.
+
+    Returns:
+        List of dicts: timestamp, run_dir, config, results
+    """
+    if output_base_dir is None:
+        output_base_dir = Path(__file__).parent.parent / "results" / "tgat_runs"
+
+    if not output_base_dir.exists():
+        return []
+
+    runs = []
+    for run_dir in output_base_dir.glob("run_*"):
+        if not run_dir.is_dir():
+            continue
+
+        timestamp_str = run_dir.name.replace("run_", "")
+        try:
+            timestamp = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+            timestamp_display = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            timestamp_display = timestamp_str
+
+        config = {}
+        config_path = run_dir / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = json.load(f)
+            except Exception:
+                pass
+
+        results = {}
+        results_path = run_dir / "results.json"
+        if results_path.exists():
+            try:
+                with open(results_path) as f:
+                    results = json.load(f)
+            except Exception:
+                pass
+
+        runs.append({
+            "timestamp": timestamp_display,
+            "run_dir": str(run_dir),
+            "config": config,
+            "results": results,
+        })
+
+    runs.sort(key=lambda x: x["timestamp"], reverse=True)
     return runs
 
 

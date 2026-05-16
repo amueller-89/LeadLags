@@ -143,7 +143,10 @@ def render_band_results(run_dir: Path, band_name: str):
 
     # Top Relationships
     st.write("**Top Lead-Lag Relationships:**")
-    relationships_df = pd.read_csv(relationships_path)
+    try:
+        relationships_df = pd.read_csv(relationships_path)
+    except pd.errors.EmptyDataError:
+        relationships_df = pd.DataFrame()
     if not relationships_df.empty:
         st.dataframe(relationships_df.head(10), use_container_width=True)
     else:

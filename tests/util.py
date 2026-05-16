@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 
 def generate_two_shifted_timeseries(
@@ -94,3 +95,64 @@ def generate_shifted_timeseries(
     offsets = np.array(offsets)
     lags = offsets[None, :, :] - offsets[:, None, :]
     return t, signals, lags, frequencies
+
+
+def generate_synthetic_tick_data(
+    n_assets: int = 3,
+    n_ticks_per_asset: int = 300,
+    start: str = "2024-01-01 09:00:00",
+    seed: int = 42,
+):
+    """Generate synthetic tick data and 1-min OHLCV for TGAT tests.
+
+    Prices follow geometric Brownian motion. Ticks are irregularly spaced.
+    Returns (tick_data, ohlcv_data) dicts keyed by 'ASSET0', 'ASSET1', ...
+    """
+    rng = np.random.default_rng(seed)
+    asset_names = [f"ASSET{i}" for i in range(n_assets)]
+    start_ts = pd.Timestamp(start, tz="UTC")
+    # Span about 10 minutes of tick data
+    total_seconds = 600
+
+    tick_data = {}
+    ohlcv_data = {}
+
+    for asset in asset_names:
+        # Irregular tick timestamps
+        intervals = rng.exponential(scale=total_seconds / n_ticks_per_asset, size=n_ticks_per_asset)
+        offsets_sec = np.cumsum(intervals)
+        timestamps = [start_ts + pd.Timedelta(seconds=float(s)) for s in offsets_sec]
+
+        # GBM prices
+        log_returns = rng.normal(0, 0.001, size=n_ticks_per_asset)
+        prices = 100.0 * np.exp(np.cumsum(log_returns))
+        amounts = rng.exponential(scale=1.0, size=n_ticks_per_asset)
+
+        tick_df = pd.DataFrame(
+            {
+                "price": prices,
+                "amount": amounts,
+                "cost": prices * amounts,
+                "side": rng.choice(["buy", "sell"], size=n_ticks_per_asset),
+                "id": [str(k) for k in range(n_ticks_per_asset)],
+            },
+            index=pd.DatetimeIndex(timestamps, name="timestamp"),
+        )
+        tick_data[asset] = tick_df
+
+        # 1-min OHLCV resampled from tick prices
+        price_series = pd.Series(prices, index=pd.DatetimeIndex(timestamps))
+        amount_series = pd.Series(amounts, index=pd.DatetimeIndex(timestamps))
+        ohlcv = pd.DataFrame(
+            {
+                "open": price_series.resample("1min").first(),
+                "high": price_series.resample("1min").max(),
+                "low": price_series.resample("1min").min(),
+                "close": price_series.resample("1min").last(),
+                "volume": amount_series.resample("1min").sum(),
+            }
+        ).dropna()
+        ohlcv.index.name = "timestamp"
+        ohlcv_data[asset] = ohlcv
+
+    return tick_data, ohlcv_data

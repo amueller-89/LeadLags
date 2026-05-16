@@ -70,6 +70,17 @@ def main():
     )
     parser.add_argument("--no-viz", action="store_true", help="Skip visualization generation")
 
+    # TGAT arguments
+    parser.add_argument(
+        "--train-tgat", action="store_true", help="Train TGAT model after spectral analysis"
+    )
+    parser.add_argument(
+        "--tgat-epochs", type=int, default=50, help="Max training epochs for TGAT"
+    )
+    parser.add_argument(
+        "--tgat-window", type=int, default=300, help="Tick lookback window in seconds for TGAT"
+    )
+
     args = parser.parse_args()
 
     # Create output directory
@@ -229,7 +240,86 @@ def main():
         relationships.to_csv(output_dir / f"{band_name}_relationships.csv", index=False)
         scores.to_csv(output_dir / f"{band_name}_leadership.csv", header=["score"])
 
-    # Step 5: Visualization
+    # Step 5: TGAT Training (optional)
+    if args.train_tgat:
+        print("\n" + "=" * 70)
+        print("  Step 5: Training TGAT Model")
+        print("=" * 70)
+
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).parent / "src"))
+            from models import TGATModel, GraphBuilder, TGATDataset, TGATTrainer
+            from backend_utils import list_cached_data, load_cached_data
+
+            # Find raw tick parquet files
+            cached = list_cached_data()
+            tick_files = [f for f in cached if f.get("timeframe", "") == "tick"]
+
+            if not tick_files:
+                print("No raw tick data found. Fetch tick data first (use the dashboard).")
+            else:
+                print(f"Found {len(tick_files)} tick data file(s)")
+                tick_raw = load_cached_data(tick_files)  # dict[symbol -> DataFrame]
+
+                # Determine which spectral band to use for graph seeding
+                first_band = next(iter(results_raw))
+                print(f"Seeding graph edges from spectral band: '{first_band}'")
+
+                asset_names = list(returns.columns)
+                gb = GraphBuilder(
+                    asset_names=asset_names,
+                    spectral_results=results_raw,
+                    window_seconds=args.tgat_window,
+                )
+
+                train_ds = TGATDataset(
+                    tick_raw, processed_ohlcv, gb, window_seconds=args.tgat_window, split="train"
+                )
+                val_ds = TGATDataset(
+                    tick_raw, processed_ohlcv, gb, window_seconds=args.tgat_window, split="val"
+                )
+                test_ds = TGATDataset(
+                    tick_raw, processed_ohlcv, gb, window_seconds=args.tgat_window, split="test"
+                )
+
+                print(f"Dataset: {len(train_ds)} train / {len(val_ds)} val / {len(test_ds)} test samples")
+
+                if len(train_ds) == 0:
+                    print("No training samples available. Ensure tick and 1-min OHLCV data overlap.")
+                else:
+                    model = TGATModel(n_assets=len(asset_names))
+                    trainer = TGATTrainer(
+                        model=model,
+                        train_dataset=train_ds,
+                        val_dataset=val_ds,
+                        test_dataset=test_ds,
+                        checkpoint_dir=str(output_dir / "tgat_checkpoints"),
+                    )
+
+                    history = trainer.train(max_epochs=args.tgat_epochs)
+                    test_metrics = history.get("test_metrics", {})
+                    print(f"\nTGAT Test MSE:      {test_metrics.get('mse', float('nan')):.6f}")
+                    print(f"TGAT Spearman ρ:    {test_metrics.get('spearman_corr', float('nan')):.4f}")
+
+                    # Spearman vs spectral leadership
+                    spectral_scores = analyzer.get_asset_leadership_score(
+                        list(results_raw.values())[0][0],
+                        list(results_raw.values())[0][1],
+                        min_coherence=args.min_coherence,
+                    )
+                    rho_vs_spectral = trainer.compute_spearman_vs_spectral(test_ds, spectral_scores)
+                    print(f"TGAT vs Spectral ρ: {rho_vs_spectral:.4f}")
+
+        except ImportError as e:
+            print(f"Could not import TGAT modules: {e}")
+            print("Ensure torch and torch-geometric are installed.")
+        except Exception as e:
+            print(f"Error during TGAT training: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Step 6: Visualization
     if not args.no_viz:
         print("\n" + "=" * 70)
         print("  Step 5: Generating Visualizations")
