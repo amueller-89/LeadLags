@@ -1,21 +1,12 @@
 # Crypto Lead-Lag Analysis
 
-A comprehensive toolkit for analyzing lead-lag relationships in cryptocurrency markets using spectral methods and machine learning.
+A dashboard for analyzing lead-lag relationships in cryptocurrency markets using both spectral methods and machine learning.
 
-## Overview
+### Key Question
 
-This project implements multiple approaches to detect lead-lag relationships between cryptocurrencies:
-
-1. **Spectral Analysis** (✅ Implemented) - FFT-based cross-spectral density analysis
-2. **GAT** (🚧 Coming Soon) - Graph Attention Networks
-3. **TGAT** (🚧 Coming Soon) - Temporal Graph Attention Networks
-4. **Sheaf Neural Networks** (🚧 Optional) - Advanced geometric approach
-
-### Key Research Questions
-
-- Does BTC lead altcoins?
-- How quickly does price discovery propagate?
-- Do ML attention patterns recover spectral phase relationships?
+- Can we recover lead-lag relationships with learned (temporal) attention networks?
+- What additional structure is learned?
+- quantify value predictions (Although we would be very surprised if this approach at this level of sophistication provides any real alpha)
 
 ## Project Structure
 
